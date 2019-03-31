@@ -1,21 +1,25 @@
-# Title:         
-# Version:       
-# Date:          
+# Title:         learncpp.com book creator     
+# Version:       0.10
+# Date:          31-03-19
 # Author:        MvA
-# Input:         
-# Output:        
-# Description:         
+# Input:         parameters of website address and output format
+# Output:        full book of the website
+# Description:   The script creates the learncpp book in 4 steps:
+#                STEP1: crawl all links to content from the index page and create an index table
+#                STEP2: download all html files from these links
+#                STEP3: remove all html frames that do not go into the book
+#                STEP4: combine all html files to the book  
 
 # INIT --------------------------------------------------------------------
-setwd("~/scripts/cpp_downloader")
-library(tidyverse)
-library(rvest)
-library(tableHTML)
+library(tidyverse) # for everything the tidyverse has to offer
+library(rvest)     # for web scraping
+library(tableHTML) # to write the html index table
 
 # PARAMETERS --------------------------------------------------------------
-homepage <- "https://www.learncpp.com/"
-tutorial_page <- "https://www.learncpp.com/cpp-tutorial/"
-table_xpaths <- map(as.character(1:8), ~'//*[@id="post-8"]/div[2]/table[§]' %>% str_replace("§", .x)) #xpaths containing the index tables
+homepage <- "https://www.learncpp.com/" #page with the index table
+tutorial_page <- "https://www.learncpp.com/cpp-tutorial/" #html dir with the actual tutorials
+output_format <- "epub3" #output format of the book. Can be for instance epub3 or pdf
+output_file_name <- "learncpp_book.epub"
 
 # FUNCTIONS ---------------------------------------------------------------
 edit_html <- function(file_in, file_out) {
@@ -34,7 +38,9 @@ edit_html <- function(file_in, file_out) {
   
   xml_remove(rem, free = TRUE)
   
-  #second: remove the last table on the page (the links) and related content. colgroup needs to be removed to spread content across the page
+  #second: remove the last table on the page (the links) and related content. 
+  #needs to be done in step 2 to avoid the script removes the last table from the comment section instead
+  #colgroup needs to be removed to spread content across the page
   rem <- xml_find_all(page, "
                     //div[@class='post-bodycopy clearfix']/table[last()] | 
                     //div[@class='post-footer'] | 
@@ -52,7 +58,10 @@ edit_html <- function(file_in, file_out) {
 
 
 # PROGRAM -----------------------------------------------------------------
-# get all hyperlinks to the tutorial pages
+# STEP1: crawl all links to content from the index page and create an index table
+print("** Starting creation of index table (STEP1)")
+table_xpaths <- map(as.character(1:8), ~'//*[@id="post-8"]/div[2]/table[§]' %>% str_replace("§", .x)) #xpaths containing the index tables
+
 links <- 
   homepage %>% 
   read_html() %>% 
@@ -77,31 +86,33 @@ tb <- tables %>%
   purrr::reduce(rbind) %>% 
   dplyr::select(chapter = X1, name = X3) %>% 
   na.omit %>% 
-  dplyr::filter(!str_detect(chapter, "Chapter"),
+  dplyr::filter(!str_detect(chapter, "Chapter"),  #remove chapter headers
                 !str_detect(chapter, "Appendix")) %>% 
   cbind(links) %>% 
-  mutate(name = str_replace(name, "/", "-"),
-         index = str_pad(as.character(1:nrow(.)), 4, pad = "0")) %>% #remove fw slash from names as this gives trouble when writing the files later
-  as_tibble
+  mutate(name = str_replace(name, "/", "-"), #remove fw slash from names as this gives trouble when writing the files later
+         index = str_pad(as.character(1:nrow(.)), 4, pad = "0")) %>% #index to ensure chapters are in the correct order in the book
+  as_tibble()
 
 #write contents to use at the beginning of the book
-dir.create("html_edit")
-write_tableHTML(tableHTML(tb %>% select(-c(links, index)), rownames = FALSE), file = "html_edit/0000---index.html")
-
-# download the files
 dir.create("html_raw")
-with(tb, pwalk(list(links, index, chapter, name), ~{download.file(url = paste0(tutorial_page, ..1), destfile = paste0("html_raw/", ..2, "---", ..3, "---", ..4, ".html"))}))
+write_tableHTML(tableHTML(tb %>% select(-c(links, index)), rownames = FALSE), file = "html_raw/0000---index.html")
+
+# STEP2: download all html files from these links
+print("** Starting downloads (STEP2)")
+with(tb, pwalk(list(links, index, chapter, name), 
+               ~{download.file(url = paste0(tutorial_page, ..1), destfile = 
+                                 paste0("html_raw/", ..2, "---", ..3, "---", ..4, ".html"))}))
 html_files <- list.files("html_raw/")
-stopifnot(length(html_files) == nrow(tb)) #check if all files were downloaded
+stopifnot(length(html_files) == nrow(tb) + 1) #check if all files were downloaded, +1 for index table
+print(paste("** Succesfully downloaded", nrow(tb), "html files."))
 
-#remove unwanted content from the files
+# STEP3: remove all html frames that do not go into the book and write to html_edit dir
+print("** Starting html editing (STEP3)")
+dir.create("html_edit")
 walk(html_files, ~edit_html(file_in = paste0("html_raw/", .x), file_out = paste0("html_edit/", .x)))
-stopifnot(length(list.files("html_raw/")) == length(list.files("html_edit/")) -1 ) #check if all files were written (1 accounts for the index file)
+stopifnot(length(list.files("html_raw/")) == length(list.files("html_edit/"))) #check if all files were edited
 
-#Use pandoc to merge all files into 1 and output as epub. Requires pandoc installation!
-merge_command <- "pandoc -s html_edit/*.html -f html -t epub3 -o learncpp.epub"
-system(merge_command)
-
-#convert final html to epub
-convert_command <- "pandoc -f html -t epub3 -o learncpp.epub learncpp.html"
-system(convert_command)
+# STEP4: combine all html files to the book. !!Requires pandoc installation on local system!!
+print("** Starting book conversion (STEP4)")
+create_book_command <- paste("pandoc -s html_edit/*.html -f html -t", output_format, "-o", output_file_name)
+system(create_book_command)
